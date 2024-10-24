@@ -2,10 +2,8 @@ package services
 
 import (
 	"fmt"
-	"math"
 	"os"
 	"strconv"
-	"time"
 
 	"github.com/zapisanchez/loanMgr/internal/adapters/input"
 	"github.com/zapisanchez/loanMgr/internal/core/domain"
@@ -13,76 +11,6 @@ import (
 	"github.com/olekukonko/tablewriter"
 	"github.com/rs/zerolog/log"
 )
-
-// AddPayment adds a new payment to the loan.
-func AddPayment(loan *domain.Loan, amount float64, description string) {
-	payment := domain.Payment{
-		DateTime:    time.Now().Format("2006-01-02 15:04:05"),
-		Amount:      amount,
-		Description: description,
-	}
-	loan.Payments = append(loan.Payments, payment)
-	loan.RemainingAmount -= amount
-	loan.TotalPaid += amount
-
-	RecalulatePayOff(loan)
-
-	log.Info().Str("loan_id", loan.LoanID).Float64("amount", amount).Msg("Payment added")
-}
-
-// RemovePayment removes a payment from the loan.
-func RemovePayment(loan *domain.Loan, paymentDate string) {
-
-	// Find the payment index
-	for i, payment := range loan.Payments {
-		if payment.DateTime == paymentDate {
-			paymentIndex := i
-			payment := loan.Payments[paymentIndex]
-
-			loan.RemainingAmount += payment.Amount
-			loan.TotalPaid -= payment.Amount
-			loan.Payments = append(loan.Payments[:paymentIndex], loan.Payments[paymentIndex+1:]...)
-			RecalulatePayOff(loan)
-
-			log.Info().Str("loan_id", loan.LoanID).Int("payment_index", paymentIndex).Msg("Payment removed")
-			return
-		}
-	}
-	log.Warn().Str("loan_id", loan.LoanID).Str("payment_date", paymentDate).Msg("Payment not found")
-}
-
-// ModifyPayment modifies a payment from the loan.
-func ModifyPayment(loan *domain.Loan, paymentDate string, newAmount float64, newDescription string) {
-
-	// Find the payment index
-	for i, payment := range loan.Payments {
-		if payment.DateTime == paymentDate {
-
-			paymentIndex := i
-
-			// As we are modifying the payment, we need to UPDATE
-			payment := &loan.Payments[paymentIndex]
-
-			// Remove the old amount from the total paid and remaining amount
-			loan.RemainingAmount += payment.Amount
-			loan.TotalPaid -= payment.Amount
-
-			// Update the payment amount and description
-			payment.Amount = newAmount
-			payment.Description = newDescription
-
-			// Update the total paid and remaining amount
-			loan.RemainingAmount -= newAmount
-			loan.TotalPaid += newAmount
-
-			RecalulatePayOff(loan)
-
-			log.Info().Str("loan_id", loan.LoanID).Int("payment_index", paymentIndex).Float64("new_amount", newAmount).Msg("Payment modified")
-			return
-		}
-	}
-	log.Warn().Str("loan_id", loan.LoanID).Str("payment_date", paymentDate).Msg("Payment not found")
-}
 
 // PrintLoanSummary prints the summary of a loan.
 func PrintLoanSummary(loan domain.Loan) {
@@ -204,28 +132,4 @@ func PrintPaymentHistory(loan domain.Loan) {
 	totalTable.Render()
 
 	fmt.Println()
-}
-
-func RecalulatePayOff(loan *domain.Loan) {
-
-	if loan.Interest == 0 {
-
-		months := loan.RemainingAmount / loan.MonthlyPayment
-		loan.TimePaidOff = float64(months + 0.9999) // We round up
-		return
-	}
-
-	// Convert the annual interest rate to a monthly interest rate
-	monthlyInterestRate := loan.Interest / 12 / 100
-
-	//Verify if the monthly payment is enough to cover the interest
-	if loan.MonthlyPayment <= loan.RemainingAmount*monthlyInterestRate {
-		log.Error().Msg("The monthly payment is too low to cover the interest.")
-		return // Insufficient monthly payment
-	}
-
-	numerator := math.Log(loan.MonthlyPayment / (loan.MonthlyPayment - loan.RemainingAmount*loan.Interest))
-	denominator := math.Log(1 + loan.Interest)
-
-	loan.TimePaidOff = numerator / denominator
 }

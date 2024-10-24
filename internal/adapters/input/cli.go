@@ -20,7 +20,7 @@ func GetUserInput() string {
 	reader := bufio.NewReader(os.Stdin)
 	fmt.Print("> ")
 	input, _ := reader.ReadString('\n')
-	return input[:len(input)-1] // Eliminar el salto de línea al final
+	return input[:len(input)-1] // Remove the newline at the end
 }
 
 // GetUserName prompts the user for a username and returns it.

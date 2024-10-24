@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"strconv"
+	"time"
 
 	"github.com/zapisanchez/loanMgr/internal/adapters/input"
 	"github.com/zapisanchez/loanMgr/internal/adapters/repository"
@@ -19,19 +20,33 @@ func main() {
 	// Configure zerolog for output
 	log.Logger = log.Output(zerolog.ConsoleWriter{Out: os.Stdout})
 
+	repo, err := repository.NewFileRepo()
+	if err != nil {
+		log.Error().Err(err).Msg("Error initializing repository")
+		return
+	}
+	srvcs := services.NewUserService(repo)
+
 	// Get the username
 	userName := input.GetUserName()
 	log.Info().Str("username", userName).Msg("User entered")
 
-	// Load user data
-	user, err := repository.LoadUser(userName)
-	if err != nil {
-		log.Warn().Err(err).Msg("No user found. Do you want create a new one? y/n.")
+	var selectedUser *domain.User
+	// Load selectedUser data
+	selectedUser = srvcs.GetUser(userName)
+	if selectedUser == nil {
+		log.Warn().Msg("No user found. Do you want create a new one? y/n.")
 		// user = domain.User{UserName: userName}
 		ch := input.GetUserChoice()
 		if ch == "y" {
-			createNewUser(userName)
-			user, _ = repository.LoadUser(userName)
+
+			usr, err := srvcs.CreateUser(userName)
+			if err != nil {
+				log.Error().Err(err).Msg("Error creating user: ")
+				return
+			}
+			selectedUser = usr
+
 		} else {
 			log.Info().Msg("Exiting the program.")
 			return
@@ -59,15 +74,15 @@ func main() {
 
 		switch choice {
 		case "1":
-			services.PrintAllLoans(user.Loans) // A function to print all loans
+			services.PrintAllLoans(selectedUser.Loans) // A function to print all loans
 		case "2":
-			createNewLoan(&user) // Function to create a new loan
+			createNewLoan(selectedUser, srvcs) // Function to create a new loan
 		case "3":
-			addPaymentToLoan(&user) // Function to add payment to an existing loan
+			addPaymentToLoan(selectedUser, srvcs) // Function to add payment to an existing loan
 		case "4":
-			modifyPaymentFromLoan(&user) // New function to modify a payment
+			modifyPaymentFromLoan(selectedUser, srvcs) // New function to modify a payment
 		case "5":
-			viewPaymentHistory(&user) // New function to view payment history
+			viewPaymentHistory(selectedUser) // New function to view payment history
 		case "6":
 			log.Info().Msg("Exiting the program.")
 			return // Exit the program
@@ -77,19 +92,7 @@ func main() {
 	}
 }
 
-func createNewUser(userName string) {
-	log.Info().Msg("Creating a new user.")
-
-	user := domain.User{UserName: userName}
-
-	if err := repository.SaveUser(user); err != nil {
-		log.Error().Err(err).Msg("Error saving user data")
-	} else {
-		log.Info().Msg("User data saved successfully")
-	}
-}
-
-func createNewLoan(user *domain.User) {
+func createNewLoan(user *domain.User, srvc *services.UserService) {
 	log.Info().Msg("Creating a new loan.")
 
 	// Get loan details from the user
@@ -103,31 +106,21 @@ func createNewLoan(user *domain.User) {
 
 	// Create the new loan
 	loan := domain.Loan{
-		LoanID:          loanID,
-		LoanName:        loanName,
-		Amount:          initialLoan,
-		RemainingAmount: initialLoan,
-		TotalPaid:       0, // No payments made yet
-		Interest:        interest,
-		MonthlyPayment:  monthlyPayment,
-		// TimePaidOff:     calculateMonthsUntilLoanPaidOff(initialLoan, monthlyPayment, interest),
+		LoanID:         loanID,
+		LoanName:       loanName,
+		Amount:         initialLoan,
+		Interest:       interest,
+		MonthlyPayment: monthlyPayment,
 	}
-
-	//init to 0 payment and calculte payOff
-	services.AddPayment(&loan, 0, "Initial Loan")
-
-	user.Loans = append(user.Loans, loan)
-
-	if err := repository.SaveUser(*user); err != nil {
-		log.Error().Err(err).Msg("Error saving user data")
-	} else {
-		log.Info().Msg("User data saved successfully")
+	err := srvc.AddLoanToUser(user.UserName, loan)
+	if err != nil {
+		log.Error().Err(err).Msg("Error Creating Loan")
+		return
 	}
-
 	log.Info().Msg("New loan created")
 }
 
-func modifyPaymentFromLoan(user *domain.User) {
+func modifyPaymentFromLoan(user *domain.User, srvc *services.UserService) {
 
 	// Select a loan to modify a payment
 	loanID := input.GetLoanSelection(user.Loans)
@@ -155,17 +148,15 @@ func modifyPaymentFromLoan(user *domain.User) {
 	newAmount := input.GetPaymentAmount()
 	newDesc := input.GetPaymentDescription()
 
-	services.ModifyPayment(selectedLoan, paymentDate, newAmount, newDesc)
-
-	// Save the user data
-	if err := repository.SaveUser(*user); err != nil {
-		log.Error().Err(err).Msg("Error saving user data")
-	} else {
-		log.Info().Msg("User data saved successfully")
+	err := srvc.ModifyPaymentFromLoan(user.UserName, loanID, paymentDate, newAmount, newDesc)
+	if err != nil {
+		log.Error().Err(err).Msg("Error modifying payment")
+		return
 	}
+	log.Info().Msg("Payment modified")
 }
 
-func addPaymentToLoan(user *domain.User) {
+func addPaymentToLoan(user *domain.User, srvc *services.UserService) {
 	if len(user.Loans) == 0 {
 		log.Warn().Msg("No loans available to add payments.")
 		return
@@ -179,54 +170,16 @@ func addPaymentToLoan(user *domain.User) {
 		return
 	}
 
-	// Look for the loan by LoanID
-	var selectedLoan *domain.Loan
-	for i := range user.Loans {
-		if user.Loans[i].LoanID == loanID {
-			selectedLoan = &user.Loans[i]
-			break
-		}
-	}
+	amount := input.GetPaymentAmount()
+	description := input.GetPaymentDescription()
 
-	if selectedLoan == nil {
-		log.Warn().Msg("Loan not found.")
+	err := srvc.AddPaymentToLoan(user.UserName, loanID, domain.Payment{Amount: amount, Description: description, DateTime: time.Now().Format(time.RFC3339)})
+	if err != nil {
+		log.Error().Err(err).Msg("Error adding payment")
 		return
 	}
 
-	if selectedLoan.RemainingAmount == 0 {
-		input.ClearScreen()
-
-		log.Warn().Msg("Cannot add more payments to a loan with a total amount of 0.")
-
-		// Ask the user if they want to go back to the main menu or exit
-		log.Info().Msg("Press 'Enter' to go back to the main menu or type 'exit' to exit:")
-		inputStr := input.GetUserInput()
-
-		if inputStr == "exit" {
-			log.Info().Msg("Exiting the program.")
-			return
-		} else {
-			input.ClearScreen()
-			return
-		}
-	}
-
-	amount := input.GetPaymentAmount()
-	description := input.GetPaymentDescription()
-	services.AddPayment(selectedLoan, amount, description)
-
 	log.Info().Float64("amount", amount).Msg("Payment added")
-
-	// Save the user data
-	if err := repository.SaveUser(*user); err != nil {
-		log.Error().Err(err).Msg("Error saving user data")
-	} else {
-		log.Info().Msg("User data saved successfully")
-	}
-
-	if selectedLoan.RemainingAmount == 0 {
-		log.Info().Msg("🎉🎉 Loan fully paid 🎉🎉")
-	}
 }
 
 // Generate a unique LoanID based on existing loans
